@@ -1,0 +1,1053 @@
+---
+title: Prothonotary Warbler - Archival Light-level Geolocator Analysis
+author: "code and analysis: M.T.Hallworth"
+date: March 7 2016
+output: 
+ html_document:
+  toc: true
+---
+Introduction
+--------
+
+
+The following document outlines the steps for analyzing data from archival light-level geolocators (hereafter geolocators) deployed on PROW. Geolocators have been used to track individuals since the early 1990s but were restricted to large organisms because of their large size. Recently, with the miniturization of geolocators, researchers are now able to deploy geolocators on smaller and smaller species. Geolocators are devices that record ambient light levels every 2, 5, or 10 min depending on the model. Geolocators are attached to individuals which then migrate with the device while it records ambient light-levels throughout the year. Once recovered, the data are downloaded and analyzed to determine the time of sunrise and sunset. From the sunrise/sunset data the time of relative noon and midnight are determined. Geographical cooridnates are then derived from the relative ‘noon’ and ‘midnight’ times to give an approximate location of where the individual was throughout the year.   
+
+#### Install the required packages
+
+```{r eval = FALSE}
+# Check to make sure the required packages are installed on your machine
+# If not, they will be installed
+
+reqPackages <- c("devtools","raster","sp","maptools","rgeos","MASS")
+get.packages <- reqPackages[!(reqPackages %in% installed.packages()[,"Package"])]
+if(length(get.packages)>0) install.packages(get.packages)
+
+# Install necessary packages from Github using the devtools library #
+library(devtools)
+install_github("SWotherspoon/SGAT")
+install_github("SWotherspoon/BAStag")
+```
+
+#### Load the required packages 
+
+```{r, warning = FALSE, message = FALSE}
+library(raster)
+library(sp)
+library(rgeos)
+library(geosphere)
+library(SGAT)
+library(BAStag)
+library(MASS)
+library(maptools)
+```
+*********
+
+Read in Data
+--------
+### Spatial Layers 
+
+A shapefile of the land masses in the new world will be needed for visualizing the data and during the analysis - we will call this shapefile `americas`. 
+```{r}
+# read in a simple world map from the maptools package #
+Americas<-raster::shapefile("Spatial_Layers/Americas.shp")
+ProwDist<-raster::shapefile("Spatial_Layers/PROWdist.shp")
+```
+```{r echo = FALSE}
+data(wrld_simpl)
+plot(Americas, col = "lightgray", border="gray88")
+plot(subset(ProwDist,SEASONAL==3),col="orange",add=TRUE,border="orange")
+plot(subset(ProwDist,SEASONAL==2),col="lightblue",add=TRUE,border="lightblue")
+plot(wrld_simpl, add=TRUE)
+```
+
+###Light-level files (LUX)
+
+Read in the data recorded from the light-level geolocators. The following code reads the LUX files into a list and then names the files within in list. 
+
+```{r}
+# Read in the data from LUX files 
+PROW_LA<-list.files("Data/Louisiana",pattern = ".lux", full.names = TRUE)
+PROW_vA<-list.files("Data/Virginia", pattern = ".lux", full.names = TRUE)
+
+# Combined the different locations into a single file #
+PROWFiles<-c(PROW_LA,PROW_vA)
+
+
+# Read just the file names for Bird ID
+PROW_LA_names<- list.files("Data/Louisiana", pattern = ".lux")
+PROW_VA_names<- list.files("Data/Virginia", pattern = ".lux")
+
+# Combined the different locations into a single file #
+BirdId<-c(PROW_LA_names,PROW_VA_names)
+
+# Determine the number of birds
+nBirds<-length(BirdId)
+
+# Read in the lux file
+PROWdata<-vector('list',nBirds)
+
+# Loop through all the files and read them in as LUX files #
+for(i in 1:nBirds){
+PROWdata[[i]] <- read.table(PROWFiles[i], skip=21,col.names=c("Date","Light"), sep = "\t")  
+
+# format the date so it can be used later in the analysis
+PROWdata[[i]]$Date <- as.POSIXct(strptime(PROWdata[[i]]$Date,format="%d/%m/%Y %H:%M:%S",tz="GMT"))
+
+# Set the lowest light value to 1 
+PROWdata[[i]][PROWdata[[i]]$Light==1.14] <- 1
+
+# Take the log of light data # 
+PROWdata[[i]]$Light <- log(PROWdata[[i]]$Light)
+}
+```
+
+Here are what the data look like. 
+
+```{r echo = FALSE}
+head(PROWdata[[1]])
+```
+
+Deployment Locations 
+---------
+
+Here, I assume all birds were deployed at the same location. If locations differ, the vector of locations needs to be the same length as the `nBirds` and be in the same order as `BirdID`. 
+
+```{r}
+# Set the capture coordinates for each bird #
+CapLocs<-array(NA,c(nBirds,2))
+
+# Louisiana Capture locations
+CapLocs[1:9,1]<- -91.107176
+CapLocs[1:9,2]<- 30.370293
+
+# Virginia Capture locations
+CapLocs[10:14,1]<- -77.264484
+CapLocs[10:14,2]<-  37.364849
+```
+
+<a href="#header">back to top</a>
+
+Defining Twilights
+--------
+
+Create an emply list to store the predicted twilight times given location and zenith. The zenith angle is analagous to sun-elevation angle in Geolight or TransEDIT - different values but similar concept. Zenith angle is the angle measured from directly overhead to the geometric center of the sun’s disc when the light-level recorded by the unit crosses the threshold set by the user. 
+
+```{r}
+tm<-rise<-vector('list',nBirds)
+
+for(i in 1:nBirds){
+  tm[[i]] <- seq(from = PROWdata[[i]][1,1], 
+                 to = PROWdata[[i]][nrow(PROWdata[[i]]),1], 
+                 by = "day")
+  
+  rise[[i]] <- rep(c(TRUE, FALSE), length(tm[[i]]))
+}
+
+# making predicted twilight times given location and zenith #
+cal.dat<-vector('list',nBirds)
+
+for(i in 1:nBirds){
+  cal.dat[[i]] <- data.frame(Twilight = twilight(rep(tm[[i]], each = 2),
+                                        lon = CapLocs[i,1], 
+                                        lat = CapLocs[i,2], 
+                                        rise = rise[[i]], zenith = 94),
+                             Rise = rise[[i]]) 
+}
+```
+
+
+Plot the expected sunrise/sunset times per day and the measured sunrise/sunset, Dark periods are shown in white areas on the graph - the black represents daylight recorded by the geolocator. Sunrise times at the deployment location are shown in blue while sunset times are shown in red. 
+
+```{r}
+for(i in 1:nBirds){
+# par(ask=TRUE)
+lightImage(PROWdata[[i]],
+           offset = 19, 
+           zlim = c(0,4), 
+           main = BirdId[[i]]) 
+  
+tsimagePoints(cal.dat[[i]]$Twilight, 
+              offset = 19, 
+              pch = 16, cex = 0.5, 
+              col = ifelse(cal.dat[[i]]$Rise, "blue", "red"))
+
+# adds line at two equinoxes for reference. Change the dates if necessary (can vary by year) #
+eqnx<-as.POSIXct(c("2014-09-23", "2015-03-20"), tz = "GMT") 
+abline(v = eqnx, lwd=3, lty=3, col="purple")
+}
+```
+
+This next step needs be done interactively. Here, I provide the code and some photos of the process.
+
+```{r, eval = FALSE}
+
+# When the light levels go above the threshold the time is recorded as sunrise and when it falls
+# below the threshold the time is recorded as sunset 
+
+threshold <- 0.8
+
+# Here we define the transitions #
+# NOTE - this is an interactive processes !
+# Two plot windows will open for each bird (even in a loop it goes through one ind at a time #
+# The two plot windows may open on top on one another - be sure to move them so you can see both#
+# The process takes 4 steps - pressing "a" moves you to the next step 
+# Step 1) Determine the range of dates to find twilights 
+#          Plot heading = "Select Subset"
+#          The current selection is shown as a red bar over the plot
+#         1) To change the selection - left click on the start date and right click on the end date
+#            press "a"
+# Step 2) Determine a few transitions so that the whole file can be done 'automatically' 
+#          Plot heading = "Find Twilights"
+#         1) left click on the plot with the heading in an area that looks "decent"
+#            the second plot should zoom to that area
+#         2) click on the night (white) portion of the figure for both sunrise and sunset 
+#            where there is a nice solid black to white transition - continue to do this until
+#            the transitions show up automatically - basically you are providing a "training"
+#            dataset to search for transitions - once all transitions show up (Orange and Blue)
+#         3) press "a"
+# Step 3) Adding transitions - this is not discussed here - we will take all the ones that were found
+# Step 4) Editing transitions - this is not discussed here - we will take all the ones that were found
+# IMPORTANT - press "q" to save the data to R 
+
+twl<-vector('list',nBirds)
+
+for(i in 1:nBirds){
+twl[[i]] <- preprocessLight(tagdata = PROWdata[[i]],
+                       threshold = threshold,
+                       offset = 19,
+                       zenith = 94,
+                       zlim = c(0, 4),
+                       dark.min = 360) # 6 hours minimum dark period
+}
+```
+First, select the time frame you’re interested in - here I selected all the data. The current selection is shown as a red bar across the top of one of the figures. Press “a” to select all data. If you want to select only a portion of the data - left click on the first date and right click on the second date - the red bar at the top shows which dates are selected. Press “a” to continue.   
+*NOTE* - images are from Ovenbird data captured at Hubbard Brook Experimental Forest, NH - **NOT** PROW data. 
+<IMG SRC="Image1.jpg">   
+
+Once you accept the time frame by pressing “a” - select an area with strong constrasts - sunrise and sunset - a zoomed in window should appear (bottom panel below). Strong constrasts are shown as hard breaks between light and dark - areas that look flared or feathered (for lack of a better term) are not good areas to select.  
+<IMG SRC="Image2.jpg">   
+
+Using the zoomed in image - click at the edge of the black where the constrasts are large - continue to do so until the transitions are highlighted. Once highligted press “a” to make your selection.
+<IMG SRC="Image3.jpg">   
+
+We will not insert any new transitions or edit any transitions in the dataset - press “a” until you see the individual transitions. However, if you wanted to edit transitions you could do that here. For example, some transitions at the start or end of the file may show weird transtions - these may have occurred prior to deploying the unit but after it started collecting data or after recovering it but before it was downloaded. Those data can influence calibrartion data later on - those spurious transitions can be removed now or later in the process. I chose to remove them later.
+
+
+Sunsets need to be corrected for the sampling duration of the tag you’re using. These particular tags sampled every 2 minutes - thus the sampling interval in seconds that we need to adjust sunsets by 60 seconds - the following code does just that.
+
+```{r eval = FALSE}
+for(i in 1:nBirds){
+  twl[[i]]<-twilightAdjust(twilights=twl[[i]], interval=150)
+}
+```
+
+**Important** To save the transtions into the R environment press “q”.
+
+Save the twilights into a RDS file. I suggest doing this so that:   
+1. you don’t need to assign twilights every time you open a new session in R and   
+1. to have a record of the twilight times that were used in the analysis (for reproducibility).
+
+```{r eval = FALSE}
+for(i in 1:nBirds){
+  saveRDS(twl[[i]],paste0(BirdId[[i]],".rds")) # Saves rds file with the BirdId.rds as the name
+}
+```
+
+```{r echo = FALSE}
+twl<-vector('list',nBirds)
+for(i in 1:nBirds){
+twl[[i]]<-readRDS(paste0(BirdId[[i]],".rds"))
+}
+```
+   
+<a href="#header">back to top</a>
+
+Calibration
+-----------
+
+This next step will use the transitions that were just defined to determine       
+1. Error distribution around true twilight    
+1. Determine the zenith angle (the angle measured from directly overhead to the geometric center of the sun’s disc) This value is roughly 90 degrees off from the sun-elevation angle.
+
+Define the dates when the individual was known to be at the deployment site. These dates are important because the zenith angle is calculated using data from a known capture location. Including dates here when the bird was not in the correct location can lead to errors in the zenith angle and lead to incorrect location estimates later in the analysis. The longer the period the better - It’s important to consider the species ecology when defining these periods. For example, if birds use wildly different habitats after breeding, the zenith angle may change as they move between habitat types. Keep these types of things in mind when defining the calibrartion period. Here, I set the calibration period from the capture date to July 31.   
+
+```{r}
+# Create a vector with the dates known to be at deployment #
+calib.dates <- vector('list',nBirds)
+
+for(i in 1:nBirds){
+calib.dates[[i]] <- c(strptime(twl[[i]][1,1],format="%Y-%m-%d"),as.POSIXct("2014-07-31"))
+}
+```
+
+### Extract Calibration data
+
+Once those dates are in R we can subset the twilight data to include only those dates so we can calculate the twilight error around the known sunrise/sunset. This is the error between known sunrise/sunset times and the time when the geolocator indicated sunrise/sunset.
+
+
+```{r}
+calibration.data<-vector('list',nBirds)
+
+for(i in 1:nBirds){
+calibration.data[[i]]<-subset(twl[[i]],twl[[i]]$Twilight>=calib.dates[[i]][1] & twl[[i]]$Twilight<=calib.dates[[i]][2])
+}
+```
+
+### Model zenith angle & Twilight Deviation 
+Determining the zenith angle of the sun when the geolocator identifies a transition is very important. This angle can drastically change the location of the individual. Here, we also determine the error distribution around the known sun rise and when the geolocator indicated the sun had risen. This is needed to generate error around each location later in the analysis.
+
+```{r}
+# Generate empty lists to store data 
+sun<-z<-twl_t<-twl_deviation<-fitml<-alpha<-vector('list',nBirds)
+
+# Determine the sun elevation angle - here called the Zenith angle #
+
+for(i in 1:nBirds){
+  
+# Calculate solar time from calibration data 
+sun[[i]]  <- solar(calibration.data[[i]][,1])
+
+# Adjust the solar zenith angle for atmospheric refraction
+z[[i]] <- refracted( zenith(sun = sun[[i]],
+                            lon = CapLocs[i,1], 
+                            lat = CapLocs[i,2]))
+
+twl_t[[i]] <- twilight(tm = calibration.data[[i]][,1],
+                       lon = CapLocs[i,1], 
+                       lat = CapLocs[i,2], 
+                       rise = calibration.data[[i]][,2],
+                       zenith = quantile(z[[i]],probs=0.5))
+
+# Determine the difference in minutes from when the sun rose and the geolocator said it rose 
+twl_deviation[[i]] <- ifelse(calibration.data[[i]]$Rise, as.numeric(difftime(calibration.data[[i]][,1], twl_t[[i]], units = "mins")),
+                  as.numeric(difftime(twl_t[[i]], calibration.data[[i]][,1], units = "mins")))
+
+# Throw out values less than 0 - These values are not valid 
+twl_deviation[[i]]<-subset(twl_deviation[[i]], subset=twl_deviation[[i]]>=0)
+
+# Describe the distribution of the error 
+fitml[[i]] <- fitdistr(twl_deviation[[i]], "log-Normal")
+
+# save the Twilight model parameters
+alpha[[i]]<- c(fitml[[i]]$estimate[1], fitml[[i]]$estimate[2]) 
+}
+```
+
+```{r echo = FALSE}
+b<-unlist(twl_deviation)
+cols<-c("red","blue","green","yellow","orange","purple","brown","gray","black","pink")
+seq <- seq(0,60, length = 100)
+par(mfrow=c(1,2),mar=c(4,4,0,0))
+hist(b, freq = F,
+     yaxt="n",
+     ylim = c(0, 0.15),
+     xlim = c(0, 60),
+     breaks=15,
+     col="gray",
+     main = "",
+     xlab = "Twilight error (mins)")
+axis(2,las=2)
+for(i in 1:nBirds){
+lines(seq, dlnorm(seq, alpha[[i]][1], alpha[[i]][2]), col = cols[i], lwd = 3, lty = 2)
+}
+
+#Zenith angle plot
+par(bty="l")
+plot(median(z[[1]],na.rm=TRUE),xlim=c(1,10),ylim=c(80,100),pch=19,ylab="Zenith Angle",xlab="PROW",col=cols[1])
+segments(1,quantile(z[[1]],probs=0.025),1,quantile(z[[1]],probs=0.975),col=cols[1])
+for(i in 2:nBirds){
+  par(new = TRUE)
+  plot(median(z[[i]],na.rm=TRUE)~i,xlim=c(1,10),ylim=c(80,100),pch=19,yaxt="n",xaxt="n",ylab="",xlab="",col=cols[i])
+  segments(i,quantile(z[[i]],probs=0.025),i,quantile(z[[i]],probs=0.975),col=cols[i])
+}
+```   
+
+Left - The deviation in twilights observed by the archival light-level geolocator and the true twilight at the capture site. Notice that 1 bird (brown line) was not at the capture location during the calibration period - the deviation between civil twilight and the recorded twilights was very was nearly 1 hr off for a single bird. The remaining birds deviated by approx 10 mins. 
+
+Right - The mean (point estimate) and 95% CI for the zenith angle at the capture location. Notice the variation between individuals captured at approximately the same location. The variation is caused by a myriad of factors such as weather, habitat, behavior, etc.  
+
+<a href="#header">back to top</a>
+
+Inital Path
+-----------
+Now that we have the error distribution around known sunrise and sunset times and the zenith angle we can look at the location data. First, we will subset the data to only show transitions that 1) were after the first calibrartion date (presumably the deployment date) and 2) were not deleted above   
+
+We didn’t add or delete any transitions but this statement would remove the twilights that were deleted above had edits been made.
+
+Here we generate the first general path taken by each individual.
+
+**Important** - the tol setting in the `thresholdPath` model sets the tolerance around equinox (i.e. filter out those points). Latitudinal estimates are unrelibale around the equinox periods because the change in day length is similar everywhere. `tol` values = 0 indicates save all points - larger tol values (0.2) filter out quite a few points. For this example, I set the tolerance to 0 (not the default) so I can look at all the data - even around equinox periods.
+
+```{r}
+# Create empty vectors to store objects #
+d.twl<-path<-vector('list',nBirds)
+
+zenith0<-zenith1<-rep(NA,nBirds)
+
+# loop through the birds #
+for(i in 1:nBirds){
+  # Store the zenith (sun-elevation angle)
+  zenith0[i] <-quantile(z[[i]],prob=0.5)
+  zenith1[i]<-quantile(z[[i]],prob=0.95)
+}
+
+# subset the twilight file for dates after the first calibration date (presumably the deployment date)  
+# and exclude points that were deleted  
+# note we didn't delete any transitions here
+
+for(i in 1:nBirds){  
+  d.twl[[i]]<-subset(twl[[i]],twl[[i]]$Twilight>=calib.dates[[i]][1] & !Deleted)
+  
+  path[[i]] <- thresholdPath(twilight = d.twl[[i]]$Twilight,
+                             rise = d.twl[[i]]$Rise,
+                             zenith = zenith0[i],
+                             tol = 0)
+}
+```  
+
+Zenith angles 
+
+```{r echo = FALSE}
+zenith0
+```
+
+<a href="#header">back to top</a>
+
+Looks like all these PROW spent the non-breeding season in northern South America - `N247_29Jun15_142203` may have be captured elsewhere or moved very soon after capture.  
+
+```{r echo = FALSE}
+for(i in 1:nBirds){
+  print(BirdId[[i]])
+  layout(matrix(c(1,3,
+                  2,3), 2, 2, byrow = TRUE))
+  par(mar=c(2,4,2,0))
+  plot(path[[i]]$time, path[[i]]$x[, 2], type = "b", pch = 16, cex = 0.5, ylab = "Lat", xlab = '',xaxt="n")
+  abline(h = CapLocs[i,2])
+  abline(v = as.POSIXct("2014-09-23"),col="red",lty=2,lwd=1.5)
+  abline(v = as.POSIXct("2015-03-20"),col="red",lty=2,lwd=1.5)
+  par(mar=c(2,4,2,0))
+  plot(path[[i]]$time, path[[i]]$x[, 1], type = "b", pch = 16, cex = 0.5, ylab = "Lat", xlab = '')
+  abline(h = CapLocs[i,1])
+  abline(v = as.POSIXct("2014-09-23"),col="red",lty=2,lwd=1.5)
+  abline(v = as.POSIXct("2015-03-20"),col="red",lty=2,lwd=1.5)
+  
+  
+  plot(Americas, col = "grey95",xlim = c(-120,-60),ylim=c(0,40))
+  box()
+  lines(path[[i]]$x, col = "blue")
+  points(path[[i]]$x, pch = 16, cex = 0.5, col = "blue")
+  
+}
+```  
+
+<a href="#header">back to top</a>
+
+Creating a path
+----------------
+
+We can now use this initial path to start initialize the analysis done using Markov Chain Monte Carlo model. This model will sample the data, while incorporating error to predict the path for each individual. However, we need to give it some starting values. In this first example we will restrict the path to fall only on land.
+
+The workflow for creating the final path is:    
+
+1. Give the model an inital path - just created above    
+1. define the mid-points between locations (needed to generate path)     
+1. define a flight distance parameter - this restrict really long - unlikely flights. (likelihood a bird will fly x distance based on flight speed)  
+1. run model multiple times until model converges and throw out the first interations as burn-in  
+1. refine the model further from previous runs   
+1. create the final path
+
+Here, we define the initial path (x0) from our results above (the mapped route).
+
+### Initialize Estella model
+
+```{r}
+x0 <- z0 <- vector('list',nBirds)
+
+for(i in 1:nBirds){
+  # Take the location estimates created above
+x0[[i]]<- path[[i]]$x
+
+  # the model also needs the mid-points - generate those here
+z0[[i]]<- trackMidpts(x0[[i]])
+}
+```
+
+### Flight parameter  
+
+This next bit of code - sets the flight distance parameter (beta), sets the capture and recapture location as fixed locations, sets the area in which to search for the path (xlim,ylim) - it is very important to set limits around your data - or where the bird could be. If the longitude and latitude don’t include your data the map will be empty.
+
+Here we set the flight distance parameter. We use the gamma distribution for the flight distance because most migratory passerines are stationary for most of the time (entire breeding and non-breeding seasons). However, when they move they are moving relatively large distances.
+
+```{r}
+beta <- c(0.7, 0.08)
+```
+<IMG SRC="beta.png">
+
+### Fixed locations 
+We also need to set some of the locations as fixed locations - where we know the bird was. These locations are the capture location and the recapture locations. This next bit of code sets the first few and last locations as fixed points.
+
+This function sets the known location of the bird - capture location and recapture location - then updates the z0 - the midpoints
+```{r}
+fixedx <- vector('list',nBirds)
+
+for(i in 1:nBirds){
+fixedx[[i]]<- rep(FALSE, nrow(x0[[i]]))
+
+fixedx[[i]][1:10] <- TRUE
+
+x0[[i]][fixedx[[i]], 1] <- CapLocs[i,1]
+x0[[i]][fixedx[[i]], 2] <- CapLocs[i,2]
+
+z0[[i]] <- trackMidpts(x0[[i]]) # update z0 positions
+}
+```
+
+Here we set the longitudinal and latitudinal limits of our dataset. The error distribution around tracks will be limited to within this box. Set these values larger of an area than you need.
+```{r}
+# set xlim and ylim values need to span the range of your dataset
+xlim <- c(-115, -60)
+ylim <- c(0, 50)
+```
+
+### Restrict path to land
+
+You can restrict the path to locations on land - birds are still able to fly over water but have stationary locations on land. This makes sense for a terrestrial bird like PROW. It may not for other species, as always, consider the ecology of the species when conducting the analysis. Here, we will restrict the paths to the `Americas`.
+
+We include a prior distribution so only locations on land within the Americas are used. We first create a function to covert the `Americas` shapefile to a binary surface.
+
+```{r}
+## Function to construct a land/sea mask
+distribution.mask <- function(xlim, ylim, n = 4, land = TRUE, shape) {
+    r <- raster(nrows = n * diff(ylim), ncols = n * diff(xlim), xmn = xlim[1], 
+        xmx = xlim[2], ymn = ylim[1], ymx = ylim[2], crs = proj4string(shape))
+    r <- cover(rasterize(shape, shift = c(-360, 0), r, 1, silent = TRUE), 
+        rasterize(shape, r, 1, silent = TRUE), rasterize(elide(shape, 
+            shift = c(360, 0)), r, 1, silent = TRUE))
+    r <- as.matrix(is.na(r))[nrow(r):1, ]
+    if (land) 
+        r <- !r
+    xbin <- seq(xlim[1], xlim[2], length = ncol(r) + 1)
+    ybin <- seq(ylim[1], ylim[2], length = nrow(r) + 1)
+
+    function(p) {
+        r[cbind(.bincode(p[, 2], ybin), .bincode(p[, 1], xbin))]
+    }
+}
+```
+
+Set the projection of Americas to WGS84 
+
+```{r}
+WGS84<-"+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
+crs(Americas)<-WGS84
+crs(ProwDist)<-WGS84
+```
+
+Run the function created above to limit time spent over open water.
+
+```{r}
+## Define mask for Ovenbird distribution
+is.dist <- distribution.mask(shape=subset(ProwDist,(SEASONAL==3 | SEASONAL == 2)),
+                             xlim = xlim,
+                             ylim = ylim,
+                             n = 4,
+                             land = TRUE)
+```
+
+Now set the prior based on whether the location falls on land or not.
+
+```{r}
+# Define the log prior for x and z
+log.prior <- function(p) {
+    f <- is.dist(p)
+    ifelse(f | is.na(f), 0, -10)
+}
+```
+
+Now we can run the model. After the model runs we set the fixed locations.
+
+```{r}
+# Define the threshold model - slimilar to above #
+model <-  vector('list', nBirds)
+
+for(i in 1:nBirds){
+model[[i]]<- thresholdModel(twilight = d.twl[[i]]$Twilight,
+                            rise = d.twl[[i]]$Rise,
+                            twilight.model = "ModifiedLogNormal",
+                            alpha = alpha[[i]],
+                            beta = beta,
+                             # Here is where we set the constraints for land
+                            logp.x = log.prior, logp.z = log.prior, 
+                            x0 = x0[[i]],
+                            z0 = z0[[i]],
+                            zenith = zenith0[[i]],
+                            fixedx = fixedx[[i]])
+}
+```
+
+Here you need to set the first few locations as "known locations"-fixed locations. These are periods when you know the bird was at a specific location - capture site - when first deployed. Because the units stopped recording data before they returned to the breeding grounds - we allow the last fixes to be estimated.
+```{r}
+for(i in 1:nBirds){
+model[[i]]$fixedx<-c(model[[i]]$fixedx,rep(FALSE,(dim(model[[i]]$x0)[1]-length(model[[i]]$fixedx))))
+}
+```
+
+Here we define the error distribution around each location.
+
+```{r}
+# This defines the error distribution around each location #
+proposal.x <- proposal.z <- vector('list',nBirds)
+
+for(i in 1:nBirds){
+proposal.x[[i]] <- mvnorm(S=diag(c(0.0025,0.0025)),n=nlocation(x0[[i]]))
+proposal.z[[i]] <- mvnorm(S=diag(c(0.0025,0.0025)),n=nlocation(z0[[i]]))
+}
+```
+Finally fit the model - this can take a while - set the number of iterations to run the model with iters the larger the number of interations the longer it takes but more precise the estimates. To help save memory use the thin option to save every nth interation. The last parameter chains defines how many chains you want to run - if you run 2 chains of 1000 iterations you will have 2000 total iterations.
+
+note this package does not currently run in parallel.
+
+```{r, message=FALSE}
+fit <- vector('list', nBirds)
+
+for(i in 1:nBirds){
+  
+fit[[i]] <- estelleMetropolis(model = model[[i]],
+                         proposal.x = proposal.x[[i]],
+                         proposal.z = proposal.z[[i]],
+                         iters = 10000, # This value sets the number of iterations to run
+                         thin = 1,
+                         chains = 3)
+
+}
+
+```
+
+
+
+### Fine Tuning 
+
+Take the previous model results (the path above) and feed it into the same model as the inital path. This will fine tune the final model.
+
+```{r}
+
+proposal.x[[i]] <- mvnorm(S=diag(c(0.0025,0.0025)),n=nlocation(x0[[i]]))
+proposal.z[[i]] <- mvnorm(S=diag(c(0.0025,0.0025)),n=nlocation(z0[[i]]))
+
+fit[[i]] <- estelleMetropolis(model = model[[i]],
+                              proposal.x = proposal.x[[i]],
+                              proposal.z = proposal.z[[i]],
+                              x0 = chainLast(fit[[i]]$x),
+                              z0 = chainLast(fit[[i]]$z),
+                              iters=10000, # This value sets the number of iterations to run
+                              thin=1,
+                              chains=3)
+
+# Final Run
+
+proposal.x[[i]] <- mvnorm(chainCov(fit[[i]]$x),s=0.1)
+proposal.z[[i]] <- mvnorm(chainCov(fit[[i]]$z),s=0.1)
+
+# Note the increase in number of interations - this takes a bit longer to run
+fit[[i]] <- estelleMetropolis(model = model[[i]],
+                              proposal.x = proposal.x[[i]],
+                              proposal.z = proposal.z[[i]],
+                              x0=chainLast(fit[[i]]$x),
+                              z0=chainLast(fit[[i]]$z),
+                              iters=5000,  # This value sets the number of iterations to run
+                              thin=1,
+                              chains=3)
+```
+
+## Inital results 
+
+Plot the inital results - which includes error.
+ 
+```{r}
+# This step makes an empty raster #
+r <- raster(nrows=4*diff(ylim),ncols=4*diff(xlim),xmn=xlim[1],xmx=xlim[2],ymn=ylim[1],ymx=ylim[2])
+```
+
+Here for each day we will fill the raster with the locations 
+Note - you can change breaks to "month" - "week" - etc. 
+
+```{r}
+S <- vector('list',nBirds)
+
+for(i in 1:nBirds){
+S[[i]] <- slices(type="intermediate",
+                 breaks="day",
+                 mcmc=fit[[i]],
+                 grid=r)
+}
+```
+
+Below I used the data to indicate the dates - Here is one way to determine the dates.
+We can use these dates to get a summary layer of where the bird was for the enitre stationary non-breeding season.
+We can also combine the breeding season periods from Release date to end of breeding and arrival to capture date. 
+
+```{r echo = FALSE}
+
+DATES <-  tm <- sk <- vector('list',nBirds)
+Jul31 <- Nov01  <- rep(NA,nBirds)
+
+# Create a vector of the Dates in the file - here we set rise=true because the data has both rise and sunset
+
+for(i in 1:nBirds){ 
+DATES[[i]] <- S[[i]]$mcmc[[1]]$time[ which( S[[i]]$mcmc[[1]]$rise==TRUE) ]
+
+
+# Here we specify our dates of interest. 
+ReleaseDay<-1
+Jul31[i]<-which(strptime(DATES[[i]],format="%Y-%m-%d")==as.POSIXct("2014-07-31"))
+
+
+# Breeding 
+# Get time when on the breeding grounds 
+tm[[i]]<-sliceInterval(S[[i]],k=c(ReleaseDay:Jul31[i]))
+
+
+# "Slice" the data and save all dates between Release date and July 31 2011, and June 1 2012 until capture.
+sk[[i]]<-slice(S[[i]],k=c(ReleaseDay:Jul31[i]))
+
+print(BirdId[i])
+
+  plot(Americas,col="gray74",
+       ylim=ylim, xlim=xlim)
+  
+  plot(sk[[i]],useRaster=TRUE,
+       ylim=ylim, xlim=xlim,
+       axes=FALSE, add=TRUE,
+       legend=FALSE,
+       col=rev(bpy.colors(50)),
+       cex.axis=0.7)
+  
+  plot(Americas,border="gray",add=TRUE)
+  
+# Non-breeding 
+
+Nov01[i] <- which(strptime(DATES[[i]],format="%Y-%m-%d")==as.POSIXct("2014-11-01"))
+
+  tm[[i]]<- sliceInterval(S[[i]],k=c(Nov01[i]:length(DATES[[i]])))
+  
+# "Slice" data and merge between Nov 01 2014 and Feb 31 2015.
+  sk[[i]]<- slice(S[[i]],k=c(Nov01[i]:length(DATES[[i]])))
+  
+  plot(sk[[i]],useRaster=TRUE,add=TRUE,
+       #ylim=c(15,55),xlim=c(-100,-60),
+       axes=FALSE,
+       legend=FALSE,
+       col=rev(bpy.colors(50)),
+       cex.axis=0.7)
+  plot(Americas,border="black",add=TRUE)
+  plot(SpatialPoints(cbind(CapLocs[i,1],CapLocs[i,2])),add=TRUE,pch=19,cex=1.5)
+ box()
+ } 
+```
+
+Multiple Zenith Angles
+----------------------
+
+The zenith angle (sun-elevation angle) can be influenced by a myriad of factors including habitat, weather, topography, bird behavior, etc. Geolocators were deployed in Colombia within mangrove habitat during January 2016 to estimate the zenith angle within the habitat suspected to be used by PROW during the non-breeding season. Below, instead of using a single zenith angle throughout the year, we use a breeding season zenith angle calculated while at the deployment site and a non-breeding season zenith angle from the geolocators deployed in Colombia. 
+
+Data from Colombia deployment  
+
+```{r}
+Col_S<-readLig("Data/Calibration/stalk geo_000.lig", skip = 1)
+Col_SLess<-readLig("Data/Calibration/no stalk geo_000.lig", skip=1)
+
+# Save only the columns named Date and Light
+Col_S<-Col_S[,c("Date","Light")]
+Col_SLess<-Col_SLess[,c("Date","Light")]
+```
+
+Subset the data to include the different calibration locations within Colombia  
+
+Light-level geolocator with a stalk - 
+```{r}
+Salamanca_S<-Col_S[which(Col_S$Date > as.POSIXlt("2016-01-05",format = "%Y-%m-%d") 
+                         & Col_S$Date < as.POSIXlt("2016-01-22",format = "%Y-%m-%d")),]
+
+Flamencos_S<-Col_S[which(Col_S$Date > as.POSIXlt("2016-01-22",format = "%Y-%m-%d") 
+                         & Col_S$Date < as.POSIXlt("2016-01-26",format = "%Y-%m-%d")),]
+```
+
+Light-level geolocator with**out** a stalk - 
+```{r}
+Salamanca_SL<-Col_SLess[which(Col_SLess$Date > as.POSIXlt("2016-01-05",format = "%Y-%m-%d") 
+                         & Col_SLess$Date < as.POSIXlt("2016-01-10",format = "%Y-%m-%d")),]
+
+
+Flamencos_SL<-Col_SLess[which(Col_SLess$Date > as.POSIXlt("2016-01-22",format = "%Y-%m-%d") 
+                         & Col_SLess$Date < as.POSIXlt("2016-01-26",format = "%Y-%m-%d")),]
+
+Marimonda_SL<-Col_SLess[which(Col_SLess$Date > as.POSIXlt("2016-01-11",format = "%Y-%m-%d") 
+                         & Col_SLess$Date < as.POSIXlt("2016-01-14",format = "%Y-%m-%d")),]
+
+Bocas_SL<-Col_SLess[which(Col_SLess$Date > as.POSIXlt("2016-01-13",format = "%Y-%m-%d") 
+                         & Col_SLess$Date < as.POSIXlt("2016-01-17",format = "%Y-%m-%d")),]
+
+Cispata_SL<-Col_SLess[which(Col_SLess$Date > as.POSIXlt("2016-01-17",format = "%Y-%m-%d") 
+                         & Col_SLess$Date < as.POSIXlt("2016-01-20",format = "%Y-%m-%d")),]
+```
+
+One example of processing the calibration data - not all are shown. 
+
+```{r eval = FALSE}
+twl_Flamencos_S <- preprocessLight(tagdata = Flamencos_S, 
+                              dark.min=360, 
+                              threshold = 0.8,
+                              offset = 19, 
+                              lmax=5, 
+                              zlim = c(0, 64))
+
+
+twl_Flamencos_S<-twilightAdjust(twilights=twl_Flamencos_S, interval=150)
+``` 
+
+```{r eval = FALSE}
+# Calculate solar time from calibration data 
+  sun  <- solar(twl_Flamencos_S[,1])
+  
+  # Adjust the solar zenith angle for atmospheric refraction
+  z <- refracted( zenith(sun = sun,
+                              lon = -73.10123, 
+                              lat = 11.42013))
+  
+  
+  median(z)
+[1] 92.45916
+```
+
+The below figure shows the locations within Colombia where the calibration data were obtained and the colors represent the order (Red = largest, Green = smallest zenith angle).  
+
+```{r echo = FALSE}
+plot(subset(wrld_simpl,NAME=="Colombia"),col="lightgray")
+  plot(wrld_simpl,add=TRUE)
+plot(SpatialPoints(cbind(c(-74.686,-73.101,-76.817,-76.837,-75.784),
+                         c(11.006,11.420,08.569,08.089,09.393))),add=TRUE,pch=19,col = (c("orange","red","yellow","blue","green")))
+```
+
+
+Zenith Angles for light-level geolocator with a stalk
+
+|Location|Latitude| Longitude|Zenith|
+|:---------|:-----------:|:----------:|:------:|
+|Salamanca|11.006|-74.686|93.4724|
+|Flamencos|11.420|-73.101|92.4592|
+
+Zenith Angles for light-level geolocator with**out** a stalk
+
+|Location|Latitude| Longitude|Zenith|
+|:---------|:-----------:|:----------:|:------:|
+|Salamanca|11.006|-74.686|93.9496|
+|Flamencos|11.420|-73.101|94.4907|
+|Marimonda|08.569|-76.817|93.8249|
+|Bocas del Atrato|08.089|-76.837|93.4077|
+|Cispata|09.393|-75.784|93.6820|
+
+
+### Incorporating multiple zenith angles 
+
+Determine the mean zenith angle for light-level geolocators with (S) and with**out** a stalk (SL). 
+```{r}
+WinterZenith_S <- mean(c(93.4724,92.4592))
+WinterZenith_SL <- mean(c(93.9496,94.4907,93.8249,93.4077,93.6820))
+```
+
+Generate a vector for each bird that has daily zenith angles. Here we will use the deployment zenith angle until the individual leaves the approximate capture location. We will use the non-breeding zenith angles for the non-breeding distribution. 
+
+```{r warning = FALSE, message = FALSE}
+Zeniths <- vector('list',nBirds)
+
+for(i in 1:nBirds){  
+  d.twl[[i]]<-subset(twl[[i]],twl[[i]]$Twilight>=calib.dates[[i]][1] & !Deleted)
+
+  Zeniths[[i]]<-rep(NA,length(d.twl[[i]]$Twilight))
+  Zeniths[[i]][which(d.twl[[i]]$Twilight<as.POSIXlt("2014-11-01",format="%Y-%m-%d"))]<-zenith0[i]
+  Zeniths[[i]][is.na(Zeniths[[i]])]<-WinterZenith_S
+
+  path[[i]] <- thresholdPath(twilight = d.twl[[i]]$Twilight,
+                             rise = d.twl[[i]]$Rise,
+                             zenith = Zeniths[[i]],
+                             tol = 0)
+}
+```
+
+Now we can run the model again. After the model runs we set the fixed locations.
+
+```{r}
+# Define the threshold model - slimilar to above #
+model <-  vector('list', nBirds)
+
+for(i in 1:nBirds){
+model[[i]]<- thresholdModel(twilight = d.twl[[i]]$Twilight,
+                            rise = d.twl[[i]]$Rise,
+                            twilight.model = "ModifiedLogNormal",
+                            alpha = alpha[[i]],
+                            beta = beta,
+                             # Here is where we set the constraints for land
+                            logp.x = log.prior, logp.z = log.prior, 
+                            x0 = x0[[i]],
+                            z0 = z0[[i]],
+                            zenith = Zeniths[[i]],
+                            fixedx = fixedx[[i]])
+}
+```
+
+```{r}
+for(i in 1:nBirds){
+model[[i]]$fixedx<-c(model[[i]]$fixedx,rep(FALSE,(dim(model[[i]]$x0)[1]-length(model[[i]]$fixedx))))
+}
+```
+
+Here we define the error distribution around each location.
+
+```{r}
+# This defines the error distribution around each location #
+proposal.x <- proposal.z <- vector('list',nBirds)
+
+for(i in 1:nBirds){
+proposal.x[[i]] <- mvnorm(S=diag(c(0.0025,0.0025)),n=nlocation(x0[[i]]))
+proposal.z[[i]] <- mvnorm(S=diag(c(0.0025,0.0025)),n=nlocation(z0[[i]]))
+}
+```
+Finally fit the model - this can take a while - set the number of iterations to run the model with iters the larger the number of interations the longer it takes but more precise the estimates. To help save memory use the thin option to save every nth interation. The last parameter chains defines how many chains you want to run - if you run 2 chains of 1000 iterations you will have 2000 total iterations.
+
+note this package does not currently run in parallel.
+
+```{r, message=FALSE}
+fit <- vector('list', nBirds)
+
+for(i in 1:nBirds){
+  
+fit[[i]] <- estelleMetropolis(model = model[[i]],
+                         proposal.x = proposal.x[[i]],
+                         proposal.z = proposal.z[[i]],
+                         iters = 10000, # This value sets the number of iterations to run
+                         thin = 1,
+                         chains = 3)
+
+}
+
+```
+
+### Fine Tuning with Multiple Zenith Angles
+
+Take the previous model results (the path above) and feed it into the same model as the inital path. This will fine tune the final model.
+
+```{r}
+
+proposal.x[[i]] <- mvnorm(S=diag(c(0.0025,0.0025)),n=nlocation(x0[[i]]))
+proposal.z[[i]] <- mvnorm(S=diag(c(0.0025,0.0025)),n=nlocation(z0[[i]]))
+
+fit[[i]] <- estelleMetropolis(model = model[[i]],
+                              proposal.x = proposal.x[[i]],
+                              proposal.z = proposal.z[[i]],
+                              x0 = chainLast(fit[[i]]$x),
+                              z0 = chainLast(fit[[i]]$z),
+                              iters=10000, # This value sets the number of iterations to run
+                              thin=1,
+                              chains=3)
+
+# Final Run
+
+proposal.x[[i]] <- mvnorm(chainCov(fit[[i]]$x),s=0.1)
+proposal.z[[i]] <- mvnorm(chainCov(fit[[i]]$z),s=0.1)
+
+# Note the increase in number of interations - this takes a bit longer to run
+fit[[i]] <- estelleMetropolis(model = model[[i]],
+                              proposal.x = proposal.x[[i]],
+                              proposal.z = proposal.z[[i]],
+                              x0=chainLast(fit[[i]]$x),
+                              z0=chainLast(fit[[i]]$z),
+                              iters=5000,  # This value sets the number of iterations to run
+                              thin=1,
+                              chains=3)
+```
+
+## Multiple Zenith Results 
+
+Plot the inital results - which includes error.
+ 
+```{r}
+# This step makes an empty raster #
+r <- raster(nrows=4*diff(ylim),ncols=4*diff(xlim),xmn=xlim[1],xmx=xlim[2],ymn=ylim[1],ymx=ylim[2])
+```
+
+Here for each day we will fill the raster with the locations 
+Note - you can change breaks to "month" - "week" - etc. 
+
+```{r}
+S <- vector('list',nBirds)
+
+for(i in 1:nBirds){
+S[[i]] <- slices(type="intermediate",
+                 breaks="day",
+                 mcmc=fit[[i]],
+                 grid=r)
+}
+```
+
+Below I used the data to indicate the dates - Here is one way to determine the dates.
+We can use these dates to get a summary layer of where the bird was for the enitre stationary non-breeding season.
+We can also combine the breeding season periods from Release date to end of breeding and arrival to capture date. 
+
+```{r echo = FALSE}
+
+DATES <-  tm <- sk <- vector('list',nBirds)
+Jul31 <- Nov01  <- rep(NA,nBirds)
+
+# Create a vector of the Dates in the file - here we set rise=true because the data has both rise and sunset
+
+for(i in 1:nBirds){ 
+DATES[[i]] <- S[[i]]$mcmc[[1]]$time[ which( S[[i]]$mcmc[[1]]$rise==TRUE) ]
+
+
+# Here we specify our dates of interest. 
+ReleaseDay<-1
+Jul31[i]<-which(strptime(DATES[[i]],format="%Y-%m-%d")==as.POSIXct("2014-07-31"))
+
+
+# Breeding 
+# Get time when on the breeding grounds 
+tm[[i]]<-sliceInterval(S[[i]],k=c(ReleaseDay:Jul31[i]))
+
+
+# "Slice" the data and save all dates between Release date and July 31 2011, and June 1 2012 until capture.
+sk[[i]]<-slice(S[[i]],k=c(ReleaseDay:Jul31[i]))
+
+print(BirdId[i])
+
+  plot(Americas,col="gray74",
+       ylim=ylim, xlim=xlim)
+  
+  plot(sk[[i]],useRaster=TRUE,
+       ylim=ylim, xlim=xlim,
+       axes=FALSE, add=TRUE,
+       legend=FALSE,
+       col=rev(bpy.colors(50)),
+       cex.axis=0.7)
+  
+  plot(Americas,border="gray",add=TRUE)
+  
+# Non-breeding 
+
+Nov01[i] <- which(strptime(DATES[[i]],format="%Y-%m-%d")==as.POSIXct("2014-11-01"))
+
+  tm[[i]]<- sliceInterval(S[[i]],k=c(Nov01[i]:length(DATES[[i]])))
+  
+# "Slice" data and merge between Nov 01 2014 and Feb 31 2015.
+  sk[[i]]<- slice(S[[i]],k=c(Nov01[i]:length(DATES[[i]])))
+  
+  plot(sk[[i]],useRaster=TRUE,add=TRUE,
+       #ylim=c(15,55),xlim=c(-100,-60),
+       axes=FALSE,
+       legend=FALSE,
+       col=rev(bpy.colors(50)),
+       cex.axis=0.7)
+  plot(Americas,border="black",add=TRUE)
+  plot(SpatialPoints(cbind(CapLocs[i,1],CapLocs[i,2])),add=TRUE,pch=19,cex=1.5)
+ box()
+ } 
+```
