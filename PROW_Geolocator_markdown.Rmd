@@ -1,16 +1,22 @@
 ---
 title: Prothonotary Warbler - Archival Light-level Geolocator Analysis
 author: "code and analysis: M.T.Hallworth"
-date: March 7 2016
 output: 
  html_document:
+  theme: "journal"
   toc: true
+  toc_float: true
 ---
+last modified on `r Sys.Date()` 
+
+<img src="https://www.audubon.org/sites/default/files/styles/nas_bird_teaser_illustration/public/4237_Sibl_9780307957900_art_r1.jpg?itok=IZiTsOHZ" align="center"/>
+
+
 Introduction
 --------
 
 
-The following document outlines the steps for analyzing data from archival light-level geolocators (hereafter geolocators) deployed on PROW. Geolocators have been used to track individuals since the early 1990s but were restricted to large organisms because of their large size. Recently, with the miniturization of geolocators, researchers are now able to deploy geolocators on smaller and smaller species. Geolocators are devices that record ambient light levels every 2, 5, or 10 min depending on the model. Geolocators are attached to individuals which then migrate with the device while it records ambient light-levels throughout the year. Once recovered, the data are downloaded and analyzed to determine the time of sunrise and sunset. From the sunrise/sunset data the time of relative noon and midnight are determined. Geographical cooridnates are then derived from the relative ‘noon’ and ‘midnight’ times to give an approximate location of where the individual was throughout the year.   
+The following document outlines the steps for analyzing data from archival light-level geolocators (hereafter geolocators) deployed on PROW. Geolocators have been used to track individuals since the early 1990s but were restricted to large organisms because of their large size. Recently, with the miniturization of geolocators, researchers are now able to deploy geolocators on smaller and smaller species. Geolocators are devices that record ambient light levels every 2, 5, or 10 min depending on the model. Geolocators are attached to individuals which then migrate with the device while it records ambient light-levels throughout the year. Once recovered, the data are downloaded and analyzed to determine the time of sunrise and sunset. From the sunrise/sunset data the time of relative noon and midnight are determined. Geographical cooridnates are then derived from the relative `noon` and `midnight` times to give an approximate location of where the individual was throughout the year.   
 
 #### Install the required packages
 
@@ -36,7 +42,7 @@ library(sp)
 library(rgeos)
 library(geosphere)
 library(SGAT)
-library(BAStag)
+library(TwGeos)
 library(MASS)
 library(maptools)
 ```
@@ -46,7 +52,8 @@ Read in Data
 --------
 ### Spatial Layers 
 
-A shapefile of the land masses in the new world will be needed for visualizing the data and during the analysis - we will call this shapefile `americas`. 
+A shapefile of the land masses in the new world will be needed for visualizing the data and during the analysis - we will call this shapefile `americas`.    
+
 ```{r}
 # read in a simple world map from the maptools package #
 Americas<-raster::shapefile("Spatial_Layers/Americas.shp")
@@ -54,10 +61,41 @@ ProwDist<-raster::shapefile("Spatial_Layers/PROWdist.shp")
 ```
 ```{r echo = FALSE}
 data(wrld_simpl)
-plot(Americas, col = "lightgray", border="gray88")
+plot(ProwDist)
+plot(Americas, col = "lightgray", border="gray88",add=TRUE)
 plot(subset(ProwDist,SEASONAL==3),col="orange",add=TRUE,border="orange")
 plot(subset(ProwDist,SEASONAL==2),col="lightblue",add=TRUE,border="lightblue")
 plot(wrld_simpl, add=TRUE)
+
+# Set the capture coordinates for each bird #
+
+CapLocs<-array(NA,c(23,2))
+
+# Louisiana Capture locations
+CapLocs[1:9,1]<- -91.10717
+CapLocs[1:9,2]<- 30.37029
+
+# South Carolina Capture Locations
+CapLocs[10,]<- cbind(-80.34655,33.21930)
+ 
+# Virginia Capture locations
+CapLocs[11:14,1]<- -77.26448
+CapLocs[11:14,2]<- 37.36484
+
+# Arkansas Capture locations
+CapLocs[15,]<- cbind(-91.11775, 34.24716) # U784
+CapLocs[16,]<- cbind(-91.10993, 34.24632) # U786
+CapLocs[17,]<- cbind(-91.11480, 34.24332) # U852
+CapLocs[18,]<- cbind(-91.11848, 34.24839) # U856
+CapLocs[19,]<- cbind(-91.11649, 34.24251) # U859
+CapLocs[20,]<- cbind(-91.10819, 34.24635) # U861
+CapLocs[21,]<- cbind(-91.11650, 34.24252) # U862 
+
+# Ohio Capture Locations
+CapLocs[22,]<- cbind(-82.91729,39.89847)
+CapLocs[23,]<- cbind(-82.91729,39.89847)
+
+points(CapLocs,pch=19,cex=1.25)
 ```
 
 ###Light-level files (LUX)
@@ -67,18 +105,30 @@ Read in the data recorded from the light-level geolocators. The following code r
 ```{r}
 # Read in the data from LUX files 
 PROW_LA<-list.files("Data/Louisiana",pattern = ".lux", full.names = TRUE)
-PROW_vA<-list.files("Data/Virginia", pattern = ".lux", full.names = TRUE)
+
+PROW_SC<-list.files("Data/SouthCarolina", pattern = ".lux", full.names = TRUE)
+
+PROW_VA<-list.files("Data/Virginia", pattern = ".lux", full.names = TRUE)
+
+PROW_AR<-list.files("Data/Arkansas", pattern = ".lux", full.names = TRUE)
+
+PROW_OH<-c(list.files("Data/Ohio", pattern = ".lig", full.names = TRUE),
+           list.files("Data/Ohio", pattern = ".lux", full.names = TRUE))
 
 # Combined the different locations into a single file #
-PROWFiles<-c(PROW_LA,PROW_vA)
+PROWFiles<-c(PROW_LA,PROW_SC,PROW_VA,PROW_AR,PROW_OH)
 
 
 # Read just the file names for Bird ID
-PROW_LA_names<- list.files("Data/Louisiana", pattern = ".lux")
-PROW_VA_names<- list.files("Data/Virginia", pattern = ".lux")
+PROW_LA_names<- list.files("Data/Louisiana", pattern = ".lux", full.names = FALSE)
+PROW_SC_names<- list.files("Data/SouthCarolina", pattern = ".lux", full.names = FALSE)
+PROW_VA_names<- list.files("Data/Virginia", pattern = ".lux", full.names = FALSE)
+PROW_AR_names<- list.files("Data/Arkansas", pattern = ".lux", full.names = FALSE)
+PROW_OH_names<- c(list.files("Data/Ohio", pattern = ".lig", full.names = FALSE),
+                  list.files("Data/Ohio", pattern = ".lux", full.names = FALSE))
 
 # Combined the different locations into a single file #
-BirdId<-c(PROW_LA_names,PROW_VA_names)
+BirdId<-c(PROW_LA_names,PROW_SC_names,PROW_VA_names,PROW_AR_names,PROW_OH_names)
 
 # Determine the number of birds
 nBirds<-length(BirdId)
@@ -87,7 +137,7 @@ nBirds<-length(BirdId)
 PROWdata<-vector('list',nBirds)
 
 # Loop through all the files and read them in as LUX files #
-for(i in 1:nBirds){
+for(i in c(1:21,24)){ # all birds but OH are .lux files 
 PROWdata[[i]] <- read.table(PROWFiles[i], skip=21,col.names=c("Date","Light"), sep = "\t")  
 
 # format the date so it can be used later in the analysis
@@ -99,6 +149,13 @@ PROWdata[[i]][PROWdata[[i]]$Light==1.14] <- 1
 # Take the log of light data # 
 PROWdata[[i]]$Light <- log(PROWdata[[i]]$Light)
 }
+# Read in the Lig Files
+PROWdata[[22]]<-readLig(PROWFiles[22],skip=1)
+PROWdata[[23]]<-readLig(PROWFiles[23],skip=1)
+
+# Re-arrange the LigFiles
+PROWdata[[22]]<-PROWdata[[22]][,c(2,4)] # save just date and light
+PROWdata[[23]]<-PROWdata[[23]][,c(2,4)] # save just date and light
 ```
 
 Here are what the data look like. 
@@ -114,15 +171,34 @@ Here, I assume all birds were deployed at the same location. If locations differ
 
 ```{r}
 # Set the capture coordinates for each bird #
+
 CapLocs<-array(NA,c(nBirds,2))
 
 # Louisiana Capture locations
-CapLocs[1:9,1]<- -91.107176
-CapLocs[1:9,2]<- 30.370293
+CapLocs[1:9,1]<- -91.10717
+CapLocs[1:9,2]<- 30.37029
+
+# South Carolina Capture Locations
+CapLocs[10,]<- cbind(-80.34655,33.21930)
 
 # Virginia Capture locations
-CapLocs[10:14,1]<- -77.264484
-CapLocs[10:14,2]<-  37.364849
+CapLocs[11:14,1]<- -77.26448
+CapLocs[11:14,2]<- 37.36484
+
+# Arkansas Capture locations
+CapLocs[15,]<- cbind(-91.11775, 34.24716) # U784
+CapLocs[16,]<- cbind(-91.10993, 34.24632) # U786
+CapLocs[17,]<- cbind(-91.11480, 34.24332) # U852
+CapLocs[18,]<- cbind(-91.11848, 34.24839) # U856
+CapLocs[19,]<- cbind(-91.11649, 34.24251) # U859
+CapLocs[20,]<- cbind(-91.10819, 34.24635) # U861
+CapLocs[21,]<- cbind(-91.11650, 34.24252) # U862 
+
+# Ohio Capture Locations
+CapLocs[22,]<- cbind(-82.91729,39.89847)
+CapLocs[23,]<- cbind(-82.91729,39.89847)
+CapLocs[24,]<- cbind(-82.87994,40.21280)
+
 ```
 
 <a href="#header">back to top</a>
@@ -160,7 +236,6 @@ Plot the expected sunrise/sunset times per day and the measured sunrise/sunset, 
 
 ```{r}
 for(i in 1:nBirds){
-# par(ask=TRUE)
 lightImage(PROWdata[[i]],
            offset = 19, 
            zlim = c(0,4), 
@@ -175,50 +250,24 @@ tsimagePoints(cal.dat[[i]]$Twilight,
 eqnx<-as.POSIXct(c("2014-09-23", "2015-03-20"), tz = "GMT") 
 abline(v = eqnx, lwd=3, lty=3, col="purple")
 }
+
 ```
 
 This next step needs be done interactively. Here, I provide the code and some photos of the process.
 
-```{r, eval = FALSE}
+```{r, eval = TRUE}
+twl <- vector('list',nBirds)
 
-# When the light levels go above the threshold the time is recorded as sunrise and when it falls
-# below the threshold the time is recorded as sunset 
-
-threshold <- 0.8
-
-# Here we define the transitions #
-# NOTE - this is an interactive processes !
-# Two plot windows will open for each bird (even in a loop it goes through one ind at a time #
-# The two plot windows may open on top on one another - be sure to move them so you can see both#
-# The process takes 4 steps - pressing "a" moves you to the next step 
-# Step 1) Determine the range of dates to find twilights 
-#          Plot heading = "Select Subset"
-#          The current selection is shown as a red bar over the plot
-#         1) To change the selection - left click on the start date and right click on the end date
-#            press "a"
-# Step 2) Determine a few transitions so that the whole file can be done 'automatically' 
-#          Plot heading = "Find Twilights"
-#         1) left click on the plot with the heading in an area that looks "decent"
-#            the second plot should zoom to that area
-#         2) click on the night (white) portion of the figure for both sunrise and sunset 
-#            where there is a nice solid black to white transition - continue to do this until
-#            the transitions show up automatically - basically you are providing a "training"
-#            dataset to search for transitions - once all transitions show up (Orange and Blue)
-#         3) press "a"
-# Step 3) Adding transitions - this is not discussed here - we will take all the ones that were found
-# Step 4) Editing transitions - this is not discussed here - we will take all the ones that were found
-# IMPORTANT - press "q" to save the data to R 
-
-twl<-vector('list',nBirds)
+seed <- c(rep("2014-11-01 04:00:00",14), rep("2015-11-01 04:00:00",10))
+seed[17] <- "2015-10-01 04:00:00"
 
 for(i in 1:nBirds){
-twl[[i]] <- preprocessLight(tagdata = PROWdata[[i]],
-                       threshold = threshold,
-                       offset = 19,
-                       zenith = 94,
-                       zlim = c(0, 4),
-                       dark.min = 360) # 6 hours minimum dark period
+twl[[i]] <- findTwilights(tagdata = PROWdata[[i]],
+                         threshold = 0.8,
+                         include = seed[i],
+                         dark.min = 360) # 6 hours minimum dark period
 }
+
 ```
 First, select the time frame you’re interested in - here I selected all the data. The current selection is shown as a red bar across the top of one of the figures. Press “a” to select all data. If you want to select only a portion of the data - left click on the first date and right click on the second date - the red bar at the top shows which dates are selected. Press “a” to continue.   
 *NOTE* - images are from Ovenbird data captured at Hubbard Brook Experimental Forest, NH - **NOT** PROW data. 
@@ -236,9 +285,23 @@ We will not insert any new transitions or edit any transitions in the dataset - 
 Sunsets need to be corrected for the sampling duration of the tag you’re using. These particular tags sampled every 2 minutes - thus the sampling interval in seconds that we need to adjust sunsets by 60 seconds - the following code does just that.
 
 ```{r eval = FALSE}
+twlEdit <- vector('list',nBirds)
+
 for(i in 1:nBirds){
-  twl[[i]]<-twilightAdjust(twilights=twl[[i]], interval=150)
+twlEdit[[i]] <- twilightEdit(twilights = twl[[i]], 
+                    window = 4,           # two days before and two days after
+                    outlier.mins = 45,    # difference in mins
+                    stationary.mins = 25, # are the other surrounding twilights within 25 mins of one another
+                    plot = TRUE)
 }
+
+timediff <- rep(300,25)
+timediff[c(22,23)] <- 120
+
+for(i in 1:nBirds){
+  twl[[i]]<-twilightAdjust(twilights=twlEdit[[i]], interval=timediff[i])
+}
+
 ```
 
 **Important** To save the transtions into the R environment press “q”.
@@ -249,14 +312,15 @@ Save the twilights into a RDS file. I suggest doing this so that:
 
 ```{r eval = FALSE}
 for(i in 1:nBirds){
-  saveRDS(twl[[i]],paste0(BirdId[[i]],".rds")) # Saves rds file with the BirdId.rds as the name
+  saveRDS(twl[[i]],paste0("Data/twilight/",BirdId[[i]],"twlEdit.rds")) # Saves rds file with the BirdId.rds as the name
 }
 ```
 
 ```{r echo = FALSE}
-twl<-vector('list',nBirds)
+twl <- vector('list',nBirds)
+
 for(i in 1:nBirds){
-twl[[i]]<-readRDS(paste0(BirdId[[i]],".rds"))
+twl[[i]]<-readRDS(paste0("Data/twilight/",BirdId[[i]],"twlEdit.rds"))
 }
 ```
    
@@ -275,8 +339,11 @@ Define the dates when the individual was known to be at the deployment site. The
 # Create a vector with the dates known to be at deployment #
 calib.dates <- vector('list',nBirds)
 
-for(i in 1:nBirds){
+for(i in 1:14){ # LA and VA birds
 calib.dates[[i]] <- c(strptime(twl[[i]][1,1],format="%Y-%m-%d"),as.POSIXct("2014-07-31"))
+}
+for(i in 15:nBirds){ # AR and OH birds
+calib.dates[[i]] <- c(strptime(twl[[i]][1,1],format="%Y-%m-%d"),as.POSIXct("2015-07-31"))
 }
 ```
 
@@ -335,7 +402,12 @@ alpha[[i]]<- c(fitml[[i]]$estimate[1], fitml[[i]]$estimate[2])
 
 ```{r echo = FALSE}
 b<-unlist(twl_deviation)
-cols<-c("red","blue","green","yellow","orange","purple","brown","gray","black","pink")
+cols<-c(rep("red",length(PROW_LA)),
+        rep("purple",length(PROW_SC)),
+        rep("blue",length(PROW_VA)),
+        rep("green",length(PROW_AR)),
+        rep("orange",length(PROW_OH)))
+
 seq <- seq(0,60, length = 100)
 par(mfrow=c(1,2),mar=c(4,4,0,0))
 hist(b, freq = F,
@@ -353,15 +425,14 @@ lines(seq, dlnorm(seq, alpha[[i]][1], alpha[[i]][2]), col = cols[i], lwd = 3, lt
 
 #Zenith angle plot
 par(bty="l")
-plot(median(z[[1]],na.rm=TRUE),xlim=c(1,10),ylim=c(80,100),pch=19,ylab="Zenith Angle",xlab="PROW",col=cols[1])
+plot(median(z[[1]],na.rm=TRUE),xlim=c(1,nBirds),ylim=c(80,100),pch=19,ylab="Zenith Angle",xlab="PROW",col=cols[1])
 segments(1,quantile(z[[1]],probs=0.025),1,quantile(z[[1]],probs=0.975),col=cols[1])
 for(i in 2:nBirds){
   par(new = TRUE)
-  plot(median(z[[i]],na.rm=TRUE)~i,xlim=c(1,10),ylim=c(80,100),pch=19,yaxt="n",xaxt="n",ylab="",xlab="",col=cols[i])
+  plot(median(z[[i]],na.rm=TRUE)~i,xlim=c(1,nBirds),ylim=c(80,100),pch=19,yaxt="n",xaxt="n",ylab="",xlab="",col=cols[i])
   segments(i,quantile(z[[i]],probs=0.025),i,quantile(z[[i]],probs=0.975),col=cols[i])
 }
 ```   
-
 Left - The deviation in twilights observed by the archival light-level geolocator and the true twilight at the capture site. Notice that 1 bird (brown line) was not at the capture location during the calibration period - the deviation between civil twilight and the recorded twilights was very was nearly 1 hr off for a single bird. The remaining birds deviated by approx 10 mins. 
 
 Right - The mean (point estimate) and 95% CI for the zenith angle at the capture location. Notice the variation between individuals captured at approximately the same location. The variation is caused by a myriad of factors such as weather, habitat, behavior, etc.  
@@ -401,7 +472,7 @@ for(i in 1:nBirds){
   path[[i]] <- thresholdPath(twilight = d.twl[[i]]$Twilight,
                              rise = d.twl[[i]]$Rise,
                              zenith = zenith0[i],
-                             tol = 0)
+                             tol = c(0,0.1))
 }
 ```  
 
@@ -547,10 +618,10 @@ Run the function created above to limit time spent over open water.
 
 ```{r}
 ## Define mask for Ovenbird distribution
-is.dist <- distribution.mask(shape=subset(ProwDist,(SEASONAL==3 | SEASONAL == 2)),
+is.dist <- distribution.mask(shape=Americas,
                              xlim = xlim,
                              ylim = ylim,
-                             n = 4,
+                             n = 10,
                              land = TRUE)
 ```
 
@@ -580,7 +651,7 @@ model[[i]]<- thresholdModel(twilight = d.twl[[i]]$Twilight,
                             logp.x = log.prior, logp.z = log.prior, 
                             x0 = x0[[i]],
                             z0 = z0[[i]],
-                            zenith = zenith0[[i]],
+                            zenith = zenith1[[i]],
                             fixedx = fixedx[[i]])
 }
 ```
@@ -607,7 +678,7 @@ Finally fit the model - this can take a while - set the number of iterations to 
 
 note this package does not currently run in parallel.
 
-```{r, message=FALSE}
+```{r,message=FALSE}
 fit <- vector('list', nBirds)
 
 for(i in 1:nBirds){
@@ -615,8 +686,8 @@ for(i in 1:nBirds){
 fit[[i]] <- estelleMetropolis(model = model[[i]],
                          proposal.x = proposal.x[[i]],
                          proposal.z = proposal.z[[i]],
-                         iters = 10000, # This value sets the number of iterations to run
-                         thin = 1,
+                         iters = 2000, # This value sets the number of iterations to run
+                         thin = 10,
                          chains = 3)
 
 }
@@ -630,6 +701,14 @@ fit[[i]] <- estelleMetropolis(model = model[[i]],
 Take the previous model results (the path above) and feed it into the same model as the inital path. This will fine tune the final model.
 
 ```{r}
+xsum <- zsum <- xinit <- zinit <- vector('list',nBirds)
+
+for(i in 1:nBirds){
+zsum[[i]] <- locationSummary(fit[[i]]$z)
+xsum[[i]] <- locationSummary(fit[[i]]$x)
+
+xinit[[i]]<-cbind(xsum[[i]]$'Lon.50%',xsum$'Lat.50%')
+zinit[[i]]<-cbind(zsum[[i]]$'Lon.50%',zsum$'Lat.50%')
 
 proposal.x[[i]] <- mvnorm(S=diag(c(0.0025,0.0025)),n=nlocation(x0[[i]]))
 proposal.z[[i]] <- mvnorm(S=diag(c(0.0025,0.0025)),n=nlocation(z0[[i]]))
@@ -637,10 +716,10 @@ proposal.z[[i]] <- mvnorm(S=diag(c(0.0025,0.0025)),n=nlocation(z0[[i]]))
 fit[[i]] <- estelleMetropolis(model = model[[i]],
                               proposal.x = proposal.x[[i]],
                               proposal.z = proposal.z[[i]],
-                              x0 = chainLast(fit[[i]]$x),
-                              z0 = chainLast(fit[[i]]$z),
-                              iters=10000, # This value sets the number of iterations to run
-                              thin=1,
+                              x0 = xinit[[i]],
+                              z0 = zinit[[i]],
+                              iters=2000, # This value sets the number of iterations to run
+                              thin=10,
                               chains=3)
 
 # Final Run
@@ -648,15 +727,22 @@ fit[[i]] <- estelleMetropolis(model = model[[i]],
 proposal.x[[i]] <- mvnorm(chainCov(fit[[i]]$x),s=0.1)
 proposal.z[[i]] <- mvnorm(chainCov(fit[[i]]$z),s=0.1)
 
+zsum[[i]] <- locationSummary(fit[[i]]$z)
+xsum[[i]] <- locationSummary(fit[[i]]$x)
+
+xinit[[i]]<-cbind(xsum[[i]]$'Lon.50%',xsum$'Lat.50%')
+zinit[[i]]<-cbind(zsum[[i]]$'Lon.50%',zsum$'Lat.50%')
+
 # Note the increase in number of interations - this takes a bit longer to run
 fit[[i]] <- estelleMetropolis(model = model[[i]],
                               proposal.x = proposal.x[[i]],
                               proposal.z = proposal.z[[i]],
-                              x0=chainLast(fit[[i]]$x),
-                              z0=chainLast(fit[[i]]$z),
+                              x0=xinit[[i]],
+                              z0=xinit[[i]],
                               iters=5000,  # This value sets the number of iterations to run
-                              thin=1,
+                              thin=20,
                               chains=3)
+}
 ```
 
 ## Inital results 
@@ -665,7 +751,7 @@ Plot the inital results - which includes error.
  
 ```{r}
 # This step makes an empty raster #
-r <- raster(nrows=4*diff(ylim),ncols=4*diff(xlim),xmn=xlim[1],xmx=xlim[2],ymn=ylim[1],ymx=ylim[2])
+r <- raster(nrows=4*diff(ylim),ncols=10*diff(xlim),xmn=xlim[1],xmx=xlim[2],ymn=ylim[1],ymx=ylim[2])
 ```
 
 Here for each day we will fill the raster with the locations 
@@ -689,7 +775,12 @@ We can also combine the breeding season periods from Release date to end of bree
 ```{r echo = FALSE}
 
 DATES <-  tm <- sk <- vector('list',nBirds)
-Jul31 <- Nov01  <- rep(NA,nBirds)
+Jul31 <- Nov01  <- Mar01 <- rep(NA,nBirds)
+
+EndBreedDate<-c(rep("2014-07-31",14),rep("2015-07-31",10))
+StartWinterDate<-c(rep("2014-11-01",14),rep("2015-11-01",10))
+
+EndWinterDate<-c(rep("2015-02-15",14),rep("2016-02-15",10))
 
 # Create a vector of the Dates in the file - here we set rise=true because the data has both rise and sunset
 
@@ -699,7 +790,7 @@ DATES[[i]] <- S[[i]]$mcmc[[1]]$time[ which( S[[i]]$mcmc[[1]]$rise==TRUE) ]
 
 # Here we specify our dates of interest. 
 ReleaseDay<-1
-Jul31[i]<-which(strptime(DATES[[i]],format="%Y-%m-%d")==as.POSIXct("2014-07-31"))
+Jul31[i]<-which(strptime(DATES[[i]],format="%Y-%m-%d")==as.POSIXct(EndBreedDate[i]))
 
 
 # Breeding 
@@ -726,12 +817,21 @@ print(BirdId[i])
   
 # Non-breeding 
 
-Nov01[i] <- which(strptime(DATES[[i]],format="%Y-%m-%d")==as.POSIXct("2014-11-01"))
+# Non-breeding 
 
-  tm[[i]]<- sliceInterval(S[[i]],k=c(Nov01[i]:length(DATES[[i]])))
+Nov01[i] <- ifelse(i==17,length(DATES[[i]]),
+                        which(strptime(DATES[[i]],format="%Y-%m-%d")==as.POSIXct(StartWinterDate[i])))
+                   
+Mar01[i] <- ifelse(i>15, which(strptime(DATES[[i]],format="%Y-%m-%d")==as.POSIXct(EndWinterDate[i])),
+                         length(DATES[[i]]))
+Mar01[17] <-length(DATES[[17]])
+
+if(i != 17){
+
+  tm[[i]]<- sliceInterval(S[[i]],k=c(Nov01[i]:Mar01[i]))
   
 # "Slice" data and merge between Nov 01 2014 and Feb 31 2015.
-  sk[[i]]<- slice(S[[i]],k=c(Nov01[i]:length(DATES[[i]])))
+  sk[[i]]<- slice(S[[i]],k=c(Nov01[i]:Mar01[i]))
   
   plot(sk[[i]],useRaster=TRUE,add=TRUE,
        #ylim=c(15,55),xlim=c(-100,-60),
@@ -739,6 +839,7 @@ Nov01[i] <- which(strptime(DATES[[i]],format="%Y-%m-%d")==as.POSIXct("2014-11-01
        legend=FALSE,
        col=rev(bpy.colors(50)),
        cex.axis=0.7)
+}
   plot(Americas,border="black",add=TRUE)
   plot(SpatialPoints(cbind(CapLocs[i,1],CapLocs[i,2])),add=TRUE,pch=19,cex=1.5)
  box()
@@ -857,7 +958,7 @@ WinterZenith_SL <- mean(c(93.9496,94.4907,93.8249,93.4077,93.6820))
 
 Generate a vector for each bird that has daily zenith angles. Here we will use the deployment zenith angle until the individual leaves the approximate capture location. We will use the non-breeding zenith angles for the non-breeding distribution. 
 
-```{r warning = FALSE, message = FALSE}
+```{r, warning = FALSE, message = FALSE}
 Zeniths <- vector('list',nBirds)
 
 for(i in 1:nBirds){  
@@ -870,7 +971,7 @@ for(i in 1:nBirds){
   path[[i]] <- thresholdPath(twilight = d.twl[[i]]$Twilight,
                              rise = d.twl[[i]]$Rise,
                              zenith = Zeniths[[i]],
-                             tol = 0)
+                             tol = c(0,0.1))
 }
 ```
 
@@ -920,12 +1021,20 @@ note this package does not currently run in parallel.
 fit <- vector('list', nBirds)
 
 for(i in 1:nBirds){
-  
+
+zsum[[i]] <- locationSummary(fit[[i]]$z)
+xsum[[i]] <- locationSummary(fit[[i]]$x)
+
+x0[[i]]<-cbind(xsum[[i]]$'Lon.50%',xsum$'Lat.50%')
+z0[[i]]<-cbind(zsum[[i]]$'Lon.50%',zsum$'Lat.50%')
+
 fit[[i]] <- estelleMetropolis(model = model[[i]],
                          proposal.x = proposal.x[[i]],
                          proposal.z = proposal.z[[i]],
-                         iters = 10000, # This value sets the number of iterations to run
-                         thin = 1,
+                         x0 = x0[[i]],
+                         z0 = z0[[i]],
+                         iters = 2000, # This value sets the number of iterations to run
+                         thin = 10,
                          chains = 3)
 
 }
@@ -937,16 +1046,22 @@ fit[[i]] <- estelleMetropolis(model = model[[i]],
 Take the previous model results (the path above) and feed it into the same model as the inital path. This will fine tune the final model.
 
 ```{r}
-
+for(i in 1:nBirds){
 proposal.x[[i]] <- mvnorm(S=diag(c(0.0025,0.0025)),n=nlocation(x0[[i]]))
 proposal.z[[i]] <- mvnorm(S=diag(c(0.0025,0.0025)),n=nlocation(z0[[i]]))
+
+zsum[[i]] <- locationSummary(fit[[i]]$z)
+xsum[[i]] <- locationSummary(fit[[i]]$x)
+
+x0[[i]]<-cbind(xsum[[i]]$'Lon.50%',xsum$'Lat.50%')
+z0[[i]]<-cbind(zsum[[i]]$'Lon.50%',zsum$'Lat.50%')
 
 fit[[i]] <- estelleMetropolis(model = model[[i]],
                               proposal.x = proposal.x[[i]],
                               proposal.z = proposal.z[[i]],
-                              x0 = chainLast(fit[[i]]$x),
-                              z0 = chainLast(fit[[i]]$z),
-                              iters=10000, # This value sets the number of iterations to run
+                              x0 = x0[[i]],
+                              z0 = z0[[i]],
+                              iters=1000, # This value sets the number of iterations to run
                               thin=1,
                               chains=3)
 
@@ -962,17 +1077,29 @@ fit[[i]] <- estelleMetropolis(model = model[[i]],
                               x0=chainLast(fit[[i]]$x),
                               z0=chainLast(fit[[i]]$z),
                               iters=5000,  # This value sets the number of iterations to run
-                              thin=1,
+                              thin=10,
                               chains=3)
+}
 ```
+```{r, echo=FALSE}
+for(i in 1:nBirds){
+  saveRDS(fit[[i]],paste0("Data/Fit/",BirdId[i],"_fit_twlEdit.rds"))
+#fit[[i]]<-readRDS(paste0("Data/Fit/",BirdId[i],"_fit.rds"))
+}
 
+birdfit<-list.files("Data/Fit/",pattern = ".rds")
+
+birdfit<-birdfit[order(match(birdfit,paste0(BirdId,"_fit.rds")))]
+
+fit <- lapply(paste0("Data/Fit/",birdfit),readRDS)
+```
 ## Multiple Zenith Results 
 
 Plot the inital results - which includes error.
  
 ```{r}
 # This step makes an empty raster #
-r <- raster(nrows=4*diff(ylim),ncols=4*diff(xlim),xmn=xlim[1],xmx=xlim[2],ymn=ylim[1],ymx=ylim[2])
+r <- raster(nrows=10*diff(ylim),ncols=4*diff(xlim),xmn=xlim[1],xmx=xlim[2],ymn=ylim[1],ymx=ylim[2])
 ```
 
 Here for each day we will fill the raster with the locations 
@@ -993,10 +1120,13 @@ Below I used the data to indicate the dates - Here is one way to determine the d
 We can use these dates to get a summary layer of where the bird was for the enitre stationary non-breeding season.
 We can also combine the breeding season periods from Release date to end of breeding and arrival to capture date. 
 
-```{r echo = FALSE}
+```{r echo = FALSE,message=FALSE,warning=FALSE}
+DATES <-  tm <- sk <- sk_winter <- vector('list',nBirds)
+Jul31 <- Nov01 <- Mar01 <- rep(NA,nBirds)
 
-DATES <-  tm <- sk <- vector('list',nBirds)
-Jul31 <- Nov01  <- rep(NA,nBirds)
+EndBreedDate<-c(rep("2014-07-31",14),rep("2015-07-31",10))
+StartWinterDate<-c(rep("2014-11-01",14),rep("2015-11-01",10))
+EndWinterDate<-c(rep("2015-02-15",14),rep("2016-02-15",10))
 
 # Create a vector of the Dates in the file - here we set rise=true because the data has both rise and sunset
 
@@ -1006,7 +1136,7 @@ DATES[[i]] <- S[[i]]$mcmc[[1]]$time[ which( S[[i]]$mcmc[[1]]$rise==TRUE) ]
 
 # Here we specify our dates of interest. 
 ReleaseDay<-1
-Jul31[i]<-which(strptime(DATES[[i]],format="%Y-%m-%d")==as.POSIXct("2014-07-31"))
+Jul31[i]<-which(strptime(DATES[[i]],format="%Y-%m-%d")==as.POSIXct(EndBreedDate[i]))
 
 
 # Breeding 
@@ -1014,7 +1144,7 @@ Jul31[i]<-which(strptime(DATES[[i]],format="%Y-%m-%d")==as.POSIXct("2014-07-31")
 tm[[i]]<-sliceInterval(S[[i]],k=c(ReleaseDay:Jul31[i]))
 
 
-# "Slice" the data and save all dates between Release date and July 31 2011, and June 1 2012 until capture.
+# "Slice" the data and save all dates between Release date and July 31.
 sk[[i]]<-slice(S[[i]],k=c(ReleaseDay:Jul31[i]))
 
 print(BirdId[i])
@@ -1033,21 +1163,136 @@ print(BirdId[i])
   
 # Non-breeding 
 
-Nov01[i] <- which(strptime(DATES[[i]],format="%Y-%m-%d")==as.POSIXct("2014-11-01"))
+Nov01[i] <- ifelse(i==17,length(DATES[[i]]),
+                        which(strptime(DATES[[i]],format="%Y-%m-%d")==as.POSIXct(StartWinterDate[i])))
+                   
+Mar01[i] <- ifelse(i>15, which(strptime(DATES[[i]],format="%Y-%m-%d")==as.POSIXct(EndWinterDate[i])),
+                         length(DATES[[i]]))
+Mar01[17] <-length(DATES[[17]])
 
-  tm[[i]]<- sliceInterval(S[[i]],k=c(Nov01[i]:length(DATES[[i]])))
+if(i != 17){
+  tm[[i]]<- sliceInterval(S[[i]],k=c(Nov01[i]:Mar01[i]))
   
 # "Slice" data and merge between Nov 01 2014 and Feb 31 2015.
-  sk[[i]]<- slice(S[[i]],k=c(Nov01[i]:length(DATES[[i]])))
-  
-  plot(sk[[i]],useRaster=TRUE,add=TRUE,
-       #ylim=c(15,55),xlim=c(-100,-60),
-       axes=FALSE,
-       legend=FALSE,
-       col=rev(bpy.colors(50)),
-       cex.axis=0.7)
-  plot(Americas,border="black",add=TRUE)
-  plot(SpatialPoints(cbind(CapLocs[i,1],CapLocs[i,2])),add=TRUE,pch=19,cex=1.5)
- box()
+  sk_winter[[i]]<- slice(S[[i]],k=c(Nov01[i]:Mar01[i]))
+plot(sk_winter[[i]],useRaster=TRUE,add=TRUE,
+#ylim=c(15,55),xlim=c(-100,-60),
+ axes=FALSE,
+legend=FALSE,
+col=rev(bpy.colors(50)),
+cex.axis=0.7)
+}
+plot(Americas,border="black",add=TRUE)
+plot(SpatialPoints(cbind(CapLocs[i,1],CapLocs[i,2])),add=TRUE,pch=19,cex=1.5)
+box()
  } 
+```
+
+Depature Dates
+--------------
+Below are the approximate depature dates from 'stationary' breeding period determined via changes in the sunrise / sunset times.
+
+```{r echo = FALSE, message=FALSE,warning=FALSE}
+zm<-GeoLight.back<-GeoLight.twl<-vector('list',nBirds)
+
+for(i in 1:nBirds){
+  zm[[i]] <- locationSummary(fit[[i]]$z,
+                             time=fit[[i]]$model$time,
+                             collapse=T) 
+  
+  GeoLight.back[[i]] <- data.frame(Twilight=twilight(fit[[i]]$model$time[-length(fit[[i]]$model$time)],
+                                                lon= zm[[i]][,5],
+                                                lat=zm[[i]][,10],
+                                                fit[[i]]$model$rise[-length(fit[[i]]$model$time)],
+                                                zenith=94, iters=3),
+                              Rise=fit[[i]]$model$rise[-length(fit[[i]]$model$time)])
+  
+  GeoLight.twl[[i]] <- data.frame(tFirst=GeoLight.back[[i]][-nrow(GeoLight.back[[i]]),1],
+                            tSecond=GeoLight.back[[i]][-1,1],
+                            type=ifelse(GeoLight.back[[i]][,2],1,2)[-nrow(GeoLight.back[[i]])])
+}
+
+library(GeoLight)
+
+changeLightAnalysis<-vector('list',nBirds)
+
+for(i in 1:nBirds){
+  print(BirdId[i])
+  changeLightAnalysis[[i]] <- changeLight(twl = GeoLight.twl[[i]][complete.cases(GeoLight.twl[[i]]),],
+                                          quantile = 0.95, rise.prob=0.075,set.prob=0.075,
+                                          days = 0.5,
+                                          plot = FALSE, 
+                                          summary = FALSE)
+}
+
+Departures<-cbind(BirdId, DepartureDate= sapply(changeLightAnalysis, function(x){format(x$migTable[1,3])}))
+
+print(Departures)
+```
+
+Migratory Routes
+---------------    
+Below are the approximate dates at each 'stationary' period determined via changes in the sunrise / sunset times. The summary map shows approximate location. These are just to get a general idea of when and where they stopped.
+```{r message=FALSE,echo=FALSE,warning=FALSE}
+for(i in 1:nBirds){
+changeLightAnalysis[[i]] <- changeLight(twl = GeoLight.twl[[i]][complete.cases(GeoLight.twl[[i]]),],
+                                          quantile = 0.95, rise.prob=0.025,set.prob=0.025,
+                                          days = 1,
+                                          plot = FALSE, 
+                                          summary = TRUE)
+
+  siteMap(cbind(zm[[i]][,5], zm[[i]][,10]),
+          map.range="America",
+          site=changeLightAnalysis[[i]]$site,
+          xlim=xlim,ylim=c(0,ylim[2]),
+          type='cross',
+          hull=F,
+          legend=FALSE)
+}
+```
+
+Migratory Connectivity 
+--------------
+```{r echo=FALSE}
+sk_winter95<-vector('list',nBirds)
+for(i in c(1:16,18:nBirds)){ 
+  sk_winter[[i]][sk_winter[[i]]>120]<-NA
+  sk_winter[[i]]<-sk_winter[[i]]/cellStats(sk_winter[[i]],max,na.rm=TRUE)
+  sk_winter[[i]][sk_winter[[i]]>quantile(sk_winter[[i]],probs=0.95)]<-1
+  sk_winter[[i]][sk_winter[[i]]<1]<-0
+}
+stack(sk_winter[c(1:16,18:nBirds)])
+
+PROW_MC<-sum(stack(sk_winter[c(1:16,18:nBirds)]),na.rm=TRUE)
+par(mar=c(0,0,0,0),bty="n")
+plot(mask(PROW_MC,Americas),col=c("transparent",rev(bpy.colors(23))),axes=FALSE,legend=FALSE)
+plot(States, add=TRUE,border="gray88")
+plot(Americas, col = "lightgray", border="gray88",add=TRUE)
+plot(mask(PROW_MC,Americas),col=c("transparent",rev(bpy.colors(23))),axes=FALSE,legend=FALSE,add=TRUE)
+plot(wrld_simpl, add=TRUE)
+ras<-raster(nrow=1,ncol=25)
+ras[]<-0:24
+plot(ras,legend.only=TRUE,horizontal=TRUE,col=(c("transparent",rev(bpy.colors(23)))),
+     smallplot=c(0.1,0.4,0.1,0.12),
+     legend.width=0.25,
+     legend.shrink=0.5,
+     axis.args=list(at=c(1,5,10,15,20,24),
+                    labels=c(1,5,10,15,20,25),
+                    cex.axis=1,
+                    mgp=c(5,0.3,0)),
+     legend.args=list(text="# of PROW", side=3, font=2, line=0.5, cex=1),add=TRUE)
+
+points(CapLocs,pch=19)
+
+tiff("PROW_MC.tiff", res = 500, width = 3000, height = 3000)
+plot(subset(Americas,NAME=="Colombia"))
+plot(PROW_MC,add=TRUE, col = c("transparent",rev(bpy.colors(23))),horizontal = TRUE)
+plot(Americas, add = TRUE)
+#plot(shapefile("Spatial_Layers/COL_water_lines_dcw.shp"),add=TRUE,lwd = 0.1, col = "blue")
+#plot(shapefile("Spatial_Layers/COL_roads.shp"),add=TRUE,lwd = 0.1,col = "gray", alpha = 0.5)
+plot(raster("Spatial_Layers/COL_msk_cov.grd"),add = TRUE, legend = FALSE,alpha = 0.5)
+raster::scalebar(500,below = "km",lonlat = TRUE)
+dev.off()
+
+
 ```
