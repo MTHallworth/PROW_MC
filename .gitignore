@@ -1,0 +1,20 @@
+# Git ignore these folders
+Data/
+Figures/
+Spatial_Layers/
+
+
+# Git ignore these file types
+*.Rproj.user
+*.Rproj
+*.Rhistory
+*.RData
+*.doc
+*.docx
+*.html
+desktop.ini
+*.exe
+*.zip
+*.xls
+*.xlsx
+
