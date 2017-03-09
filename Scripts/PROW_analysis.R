@@ -337,9 +337,14 @@ for(i in 1:nBirds){
   zenith1[i]<-quantile(z[[i]],prob=0.95)
 }
 
+## ------------------------------------------------------------------------
+WinterZenith_S <- mean(c(93.4724,92.4592))
+WinterZenith_SL <- mean(c(93.9496,94.4907,93.8249,93.4077,93.6820))
+
 # subset the twilight file for dates after the first calibration date (presumably the deployment date)  
 # and exclude points that were deleted  
 # note we didn't delete any transitions here
+
 twl <- lapply(twl, subset, !Deleted)
 
 # Manual edits #
@@ -406,11 +411,18 @@ tolvalues[22,2] <- 0.14
 tolvalues[23,2] <- 0.19
 tolvalues[24,2] <- 0.2
 
+WinterZenith_S <- mean(c(93.4724,92.4592))
+## ---- warning = FALSE, message = FALSE-----------------------------------
+Zeniths <- vector('list',nBirds)
+
 for(i in 1:nBirds){  
+  Zeniths[[i]]<-rep(NA,length(twl[[i]]$Twilight))
+  Zeniths[[i]][which(twl[[i]]$Twilight<as.POSIXlt("2014-11-01",format="%Y-%m-%d"))]<-zenith0[i]
+  Zeniths[[i]][is.na(Zeniths[[i]])]<-mean(zenith0)
   
   path[[i]] <- suppressWarnings(thresholdPath(twilight = twl[[i]]$Twilight,
                              rise = twl[[i]]$Rise,
-                             zenith = zenith0[i],
+                             zenith = Zeniths[[i]],
                              tol = tolvalues[i,]))
 }
 
@@ -523,7 +535,7 @@ model[[i]]<- thresholdModel(twilight = twl[[i]]$Twilight,
                             logp.x = log.prior, logp.z = log.prior, 
                             x0 = x0[[i]],
                             z0 = z0[[i]],
-                            zenith = zenith1[[i]],
+                            zenith = Zeniths[[i]],
                             fixedx = fixedx[[i]])
 }
 
